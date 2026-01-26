@@ -31,6 +31,22 @@ def xx_dir_hash(directory: Path) -> str:
     return h.hexdigest()
 
 
+def compute_source_hash(id: str, files: list[Path]) -> str:
+    """Compute hash from source xochitl files for change detection.
+
+    Copies files to a temp directory to get the same structure as nb_xochitl_dir,
+    then computes the hash.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        for file in files:
+            if file.is_dir():
+                shutil.copytree(file, tmp_path / file.name)
+            else:
+                shutil.copy(file, tmp_path)
+        return xx_dir_hash(tmp_path)
+
+
 def call_remarks(xochitl_dir: Path, output_dir: Path) -> bool:
     """Run remarks on xochitl directory. Returns True on success."""
     log.info(f"Running remarks on {xochitl_dir}")
@@ -59,6 +75,10 @@ def build_process_parser(parser: argparse._SubParsersAction):
     process_parser.add_argument(
         '--ocr-debug', action='store_true',
         help="Make OCR text visible for debugging alignment"
+    )
+    process_parser.add_argument(
+        '--no-ocr', action='store_true',
+        help="Disable OCR even if API key is available"
     )
 
 
@@ -136,7 +156,8 @@ def build_rm_file_index(
     pages: list[str],
     content: dict,
     backing_pdf_file: Path | None,
-    api_key: str | None = None
+    api_key: str | None = None,
+    old_rm_files: list[dict] | None = None
 ) -> list[dict]:
     '''
     Build index of .rm files with their page mappings and convert to PDF.
@@ -147,10 +168,20 @@ def build_rm_file_index(
     :param pages: Ordered list of page IDs
     :param content: Parsed .content dict
     :param backing_pdf_file: Path to backing PDF, or None
-    :returns: List of dicts with path, index, backing_pdf_index
+    :param api_key: Google Cloud Vision API key for OCR
+    :param old_rm_files: Previous rm_files metadata for OCR caching
+    :returns: List of dicts with page_id, path, index, backing_pdf_index, ocr_path
     '''
     rm_files = []
     redir_map = get_page_redir_map(content)
+
+    # Build lookup of old page data by page_id for OCR caching
+    old_pages_by_id = {}
+    if old_rm_files:
+        for old_page in old_rm_files:
+            old_page_id = old_page.get('page_id', '')
+            if old_page_id:
+                old_pages_by_id[old_page_id] = old_page
 
     # Open backing PDF if it exists to get page dimensions
     backing_pdf_doc = None
@@ -171,23 +202,42 @@ def build_rm_file_index(
             set_device('RMPP')
 
         # Convert .rm to PDF
-        fname = f'{page_index} - {page_id}'
+        fname = page_id
         rm_output_pdf = rm_output_dir / f'{fname}.pdf'
         rm_to_pdf(str(f), str(rm_output_pdf))
 
         rm_hash = hashlib.md5(f.read_bytes()).hexdigest()
 
+        # Check if we can reuse old OCR
+        old_page = old_pages_by_id.get(page_id)
+        can_reuse_ocr = False
+        if old_page:
+            old_rm_hash = old_page.get('rm_hash', '')
+            old_backing_idx = old_page.get('backing_pdf_index')
+            if old_rm_hash == rm_hash and old_backing_idx == backing_pdf_index:
+                can_reuse_ocr = True
+
         # Run OCR if API key is available
         ocr_path = None
         if api_key:
-            ocr_json_path = rm_output_dir / f'{fname}.ocr.json'
-            ocr_result = run_ocr_on_rm_output(
-                rm_output_pdf, ocr_json_path, api_key, rm_hash
-            )
-            if ocr_result:
-                ocr_path = str(ocr_json_path.relative_to(base_output_dir))
+            if can_reuse_ocr and old_page.get('ocr_path'):
+                # Reuse old OCR file path directly (file already exists)
+                old_ocr_full_path = base_output_dir / old_page['ocr_path']
+                if old_ocr_full_path.exists():
+                    ocr_path = old_page['ocr_path']
+                    log.info(f"Reusing OCR for page {page_id}")
+
+            if not ocr_path:
+                # Run fresh OCR
+                ocr_json_path = rm_output_dir / f'{fname}.ocr.json'
+                ocr_result = run_ocr_on_rm_output(
+                    rm_output_pdf, ocr_json_path, api_key, rm_hash
+                )
+                if ocr_result:
+                    ocr_path = str(ocr_json_path.relative_to(base_output_dir))
 
         rm_files.append({
+            'page_id': page_id,
             'rm_path': str(f.relative_to(base_output_dir)),
             'rm_hash': rm_hash,
             'out_path': str(rm_output_pdf.relative_to(base_output_dir)),
@@ -258,15 +308,25 @@ def stitch_ocr_text_layers(
     return pages_with_ocr
 
 
-def parse_item(id: str, files: list[Path], output_dir: Path, api_key: str | None = None, ocr_debug: bool = False) -> dict:
+def parse_item(
+    id: str,
+    files: list[Path],
+    output_dir: Path,
+    old_item: dict | None,
+    api_key: str | None = None,
+    ocr_debug: bool = False
+) -> tuple[dict, str]:
     '''
     Given item ID and xochitl files, generate output folder containing
-    thumbnails, output pdf and extracted text. Returns metadata for item.
+    thumbnails, OCR-ed output pdf and extracted text. Returns metadata for item.
+    Will only process files and OCR documents that have been changed.
 
     :param id: UUID of item
     :param files: xochitl files corresponding to item
-    :param out_dir: directory to put output
-    :param out_dir: directory to put output
+    :param old_item: Existing metadata for this specific item (if any)
+    :param output_dir: directory to put output
+    :returns: tuple of (metadata dict, status string)
+              status is one of: 'created', 'modified', 'unchanged', 'skipped'
     '''
     # Get metadata and content
     metadata = {}
@@ -288,40 +348,71 @@ def parse_item(id: str, files: list[Path], output_dir: Path, api_key: str | None
                 pages = get_pages(content)
                 last = content.get('cPages', {})\
                     .get('lastOpened', {}).get('value', '')
-                if last in pages:
+                if pages and last in pages:
                     last_opened_page = pages.index(last) + 1
 
-    # if name != 'Writing test':
-    # if name != 'Getting started copy':
-    # if name != 'Systematic Theology notes':
-    if name != 'Colours':
-    # if name != 'Everybody, always':
-    # if name != 'Fair Play':
-        return {}
 
     # Skip empty items
     if not content and not metadata:
-        return {}
+        return {}, 'skipped'
 
     # Skip deleted items
     if 'parent' in metadata and metadata['parent'] == 'trash':
         log.info(f'Skipping deleted item: {name}')
-        return {}
+        return {}, 'skipped'
 
     # Return info for folders
     is_folder = len(files) == 1 or not content
     if is_folder:
+        status = 'unchanged' if old_item else 'created'
         return {
             'type': 'folder',
             'id': id,
             'name': name,
             'parent': parent
-        }
+        }, status
 
+    # For books: compute source hash and check against old
+    source_hash = compute_source_hash(id, files)
+
+    if old_item and old_item.get('type') == 'book':
+        old_hash = old_item.get('xochitl_dir_hash', '')
+        old_name = old_item.get('name', '')
+
+        # Handle rename: if name changed, rename the output directory
+        if old_name and old_name != name:
+            old_dir = output_dir / f'{old_name} - {id}'
+            new_dir = output_dir / f'{name} - {id}'
+            if old_dir.exists():
+                log.info(f'Renaming "{old_name}" to "{name}"')
+                old_dir.rename(new_dir)
+
+        # If hash unchanged, return old metadata (with updated name/parent)
+        if source_hash == old_hash:
+            log.info(f'Unchanged: {name}')
+            result = old_item.copy()
+            result['name'] = name
+            result['parent'] = parent
+            return result, 'unchanged'
+
+    # Hash changed or new item - do full processing
     log.info(f'Processing item: {name}')
 
+    nb_output_dir = output_dir / f'{name} - {id}'
+
+    # Get old rm_files for OCR caching (before we modify anything)
+    old_rm_files = old_item.get('rm_files', []) if old_item else []
+
+    # Delete directories EXCEPT rm_output (needed for OCR cache)
+    if nb_output_dir.exists():
+        for child in nb_output_dir.iterdir():
+            if child.name != 'rm_output':
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+
     # Create output directories
-    nb_output_dir = output_dir / name
     nb_xochitl_dir = nb_output_dir / 'xochitl'
     nb_thumbnail_dir = nb_output_dir / 'thumbnails'
     nb_rm_output_dir = nb_output_dir / 'rm_output'
@@ -342,7 +433,7 @@ def parse_item(id: str, files: list[Path], output_dir: Path, api_key: str | None
             shutil.copy(file, nb_xochitl_dir)
 
     # Run remarks in temp directory
-    output_pdf = nb_output_dir / 'out.pdf'
+    output_pdf = nb_output_dir / f'{name}.pdf'
     with tempfile.TemporaryDirectory() as tmp_dir:
         remarks_out = Path(tmp_dir) / 'remarks_out'
         run_remarks(nb_xochitl_dir, remarks_out)
@@ -362,22 +453,33 @@ def parse_item(id: str, files: list[Path], output_dir: Path, api_key: str | None
     if rm_file_dir:
         rm_files = build_rm_file_index(
             rm_file_dir, nb_rm_output_dir, output_dir, pages, content, backing_pdf_file,
-            api_key=api_key
+            api_key=api_key,
+            old_rm_files=old_rm_files
         )
+
+    # Clean up orphaned OCR files
+    current_ocr_files = set()
+    for rm_file in rm_files:
+        if rm_file.get('ocr_path'):
+            current_ocr_files.add(Path(rm_file['ocr_path']).name)
+
+    for f in nb_rm_output_dir.glob('*.ocr.json'):
+        if f.name not in current_ocr_files:
+            log.info(f"Removing orphaned OCR file: {f.name}")
+            f.unlink()
 
     # Stitch OCR text layers into the final PDF
     if rm_files:
         stitch_ocr_text_layers(output_pdf, rm_files, output_dir, debug=ocr_debug)
-
-    print(json.dumps(rm_files, indent=2))
 
     xochitl_dir = str(nb_xochitl_dir.relative_to(output_dir))
     output_pdf = str(output_pdf.relative_to(output_dir))
     backing_pdf = '' if not backing_pdf else str(backing_pdf.relative_to(output_dir))
     thumbnail_dir = str(nb_thumbnail_dir.relative_to(output_dir))
 
-    dir_hash = xx_dir_hash(nb_xochitl_dir)
+    xochitl_dir_hash = xx_dir_hash(nb_xochitl_dir)
 
+    status = 'modified' if old_item else 'created'
     return {
         'type': 'book',
         'id': id,
@@ -389,13 +491,13 @@ def parse_item(id: str, files: list[Path], output_dir: Path, api_key: str | None
         'backing_pdf': backing_pdf,
         'thumbnail_dir': thumbnail_dir,
 
-        'dir_hash': dir_hash,
+        'xochitl_dir_hash': xochitl_dir_hash,
 
         'rm_files': rm_files,
 
         'last_opened_page': last_opened_page,
         'total_pages': len(pages)
-    }
+    }, status
 
 def try_get_name(files: list[Path]):
     for file in files:
@@ -409,30 +511,65 @@ def rm_process(args: argparse.Namespace):
     xochitl_dir = Path(args.xochitl_dir)
     output_dir = Path(args.output_dir)
     ocr_debug = getattr(args, 'ocr_debug', False)
+    no_ocr = getattr(args, 'no_ocr', False)
+
+    old_metadata = None
+    old_metadata_f = (output_dir / 'metadata.json')
+    if old_metadata_f.exists():
+        with open(old_metadata_f) as f:
+            old_metadata = json.load(f)
 
     # Get GCV API key for OCR
-    api_key = get_gcv_api_key()
-    if api_key:
-        log.info("GCV API key found, OCR will be enabled")
-        if ocr_debug:
-            log.info("OCR debug mode enabled - text will be visible")
+    api_key = None
+    if no_ocr:
+        log.info("OCR disabled via --no-ocr flag")
     else:
-        log.info("No GCV API key found, OCR will be disabled")
+        api_key = get_gcv_api_key()
+        if api_key:
+            log.info("GCV API key found, OCR will be enabled")
+            if ocr_debug:
+                log.info("OCR debug mode enabled - text will be visible")
+        else:
+            log.info("No GCV API key found, OCR will be disabled")
+
+    # Build lookup from old metadata
+    old_items_by_id = {item['id']: item for item in old_metadata} if old_metadata else {}
+    processed_ids = set()
+    summary = {'created': [], 'modified': [], 'deleted': [], 'unchanged': []}
 
     full_metadata = []
     errors = []
 
     id_filemap = create_id_filemap(xochitl_dir)
     for id, files in id_filemap.items():
+        old_item = old_items_by_id.get(id)
         try:
-            metadata = parse_item(id, files, output_dir, api_key=api_key, ocr_debug=ocr_debug)
-            if metadata:
-                full_metadata.append(metadata)
+            result, status = parse_item(id, files, output_dir, old_item, api_key=api_key, ocr_debug=ocr_debug)
+            if result:
+                full_metadata.append(result)
+                processed_ids.add(id)
+                if status in summary:
+                    summary[status].append(result.get('name', id))
         except Exception:
             name = try_get_name(files)
             tb = traceback.format_exc()
-            errors.append({'name': name, 'id': id, 'error' : tb})
+            errors.append({'name': name, 'id': id, 'error': tb})
             log.error(f'Item "{name}" (UUID: {id}) failed to parse! Traceback:\n{traceback.format_exc()}')
+            # Keep old item in metadata if it exists (don't lose data on error)
+            if old_item:
+                full_metadata.append(old_item)
+                processed_ids.add(id)
+
+    # Handle deletions
+    for id, old_item in old_items_by_id.items():
+        if id not in processed_ids:
+            summary['deleted'].append(old_item.get('name', id))
+            # Delete output directory if it's a book
+            if old_item.get('type') == 'book':
+                old_dir = output_dir / f"{old_item['name']} - {id}"
+                if old_dir.exists():
+                    log.info(f"Deleting removed item: {old_item['name']}")
+                    shutil.rmtree(old_dir)
 
     metadata_path = output_dir / 'metadata.json'
     with open(metadata_path, 'w') as f:
@@ -443,4 +580,16 @@ def rm_process(args: argparse.Namespace):
         with open(errors_path, 'w') as f:
             json.dump(errors, f, indent=2)
 
-    log.info(f'Processed {len(full_metadata)} items with {len(errors)} errors')
+    # Print summary
+    print("\nSummary:")
+    if summary['created']:
+        print(f"  {len(summary['created'])} notebooks created: {', '.join(summary['created'])}")
+    if summary['modified']:
+        print(f"  {len(summary['modified'])} notebooks modified: {', '.join(summary['modified'])}")
+    if summary['deleted']:
+        print(f"  {len(summary['deleted'])} notebooks deleted: {', '.join(summary['deleted'])}")
+    if summary['unchanged']:
+        print(f"  {len(summary['unchanged'])} notebooks unchanged (skipped)")
+    if errors:
+        print(f"  {len(errors)} errors")
+
