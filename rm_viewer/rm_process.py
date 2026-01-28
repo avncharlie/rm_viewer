@@ -6,6 +6,7 @@ import logging
 import argparse
 import tempfile
 import traceback
+import zipfile
 from pathlib import Path
 
 import fitz
@@ -77,6 +78,10 @@ def build_process_parser(parser: argparse._SubParsersAction):
     process_parser.add_argument(
         '--no-ocr', action='store_true',
         help="Disable OCR even if API key is available"
+    )
+    process_parser.add_argument(
+        '--no-thumbnails', action='store_true',
+        help="Skip thumbnail generation"
     )
 
 
@@ -500,7 +505,8 @@ def parse_item(
     output_dir: Path,
     old_item: dict | None,
     api_key: str | None = None,
-    ocr_debug: bool = False
+    ocr_debug: bool = False,
+    no_thumbnails: bool = False
 ) -> tuple[dict, str, dict]:
     '''
     Given item ID and xochitl files, generate output folder containing
@@ -539,7 +545,7 @@ def parse_item(
                     last_opened_page = pages.index(last) + 1
 
 
-    if name != 'Colours': return {}, 'skipped', {}
+    # if name != 'Colours': return {}, 'skipped', {}
 
     # Skip empty items
     if not content and not metadata:
@@ -666,17 +672,21 @@ def parse_item(
     # Build page index for thumbnails
     page_index = build_page_index(rm_file_dir, pages, content)
 
-    # Get old thumbnail metadata
-    old_thumbnail_pages = old_item.get('thumbnail_pages', []) if old_item else []
+    # Generate thumbnails (unless disabled)
+    thumbnail_pages = []
+    new_thumbnails = 0
+    if not no_thumbnails:
+        # Get old thumbnail metadata
+        old_thumbnail_pages = old_item.get('thumbnail_pages', []) if old_item else []
 
-    # Generate thumbnails
-    thumbnail_pages, new_thumbnails = generate_thumbnails(
-        output_pdf,
-        nb_thumbnail_dir,
-        output_dir,
-        page_index,
-        old_thumbnail_pages
-    )
+        # Generate thumbnails
+        thumbnail_pages, new_thumbnails = generate_thumbnails(
+            output_pdf,
+            nb_thumbnail_dir,
+            output_dir,
+            page_index,
+            old_thumbnail_pages
+        )
 
     xochitl_dir = str(nb_xochitl_dir.relative_to(output_dir))
     output_pdf = str(output_pdf.relative_to(output_dir))
@@ -718,6 +728,44 @@ def try_get_name(files: list[Path]):
                 metadata = json.load(f)
                 name = metadata.get('visibleName', '')
                 return name
+
+
+def build_folder_path(item_id: str, items_by_id: dict) -> Path:
+    """Build the folder path for an item by following parent chain."""
+    path_parts = []
+    current_id = items_by_id[item_id].get('parent', '')
+
+    while current_id and current_id in items_by_id:
+        parent = items_by_id[current_id]
+        path_parts.insert(0, parent['name'])
+        current_id = parent.get('parent', '')
+
+    return Path(*path_parts) if path_parts else Path('.')
+
+
+def generate_files_zip(output_dir: Path, metadata: list[dict]):
+    """Generate files.zip containing all PDFs in their folder hierarchy."""
+    items_by_id = {item['id']: item for item in metadata}
+    zip_path = output_dir / 'files.zip'
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for item in metadata:
+            if item.get('type') != 'book':
+                continue
+
+            output_pdf = item.get('output_pdf')
+            if not output_pdf:
+                continue
+
+            pdf_path = output_dir / output_pdf
+            if not pdf_path.exists():
+                continue
+
+            # Build hierarchy path
+            folder_path = build_folder_path(item['id'], items_by_id)
+            archive_name = Path('files') / folder_path / f"{item['name']}.pdf"
+
+            zf.write(pdf_path, archive_name)
 
 def rm_process(args: argparse.Namespace):
     xochitl_dir = Path(args.xochitl_dir)
@@ -761,7 +809,7 @@ def rm_process(args: argparse.Namespace):
     for id, files in id_filemap.items():
         old_item = old_items_by_id.get(id)
         try:
-            result, status, stats = parse_item(id, files, output_dir, old_item, api_key=api_key, ocr_debug=ocr_debug)
+            result, status, stats = parse_item(id, files, output_dir, old_item, api_key=api_key, ocr_debug=ocr_debug, no_thumbnails=args.no_thumbnails)
             if result:
                 full_metadata.append(result)
                 processed_ids.add(id)
@@ -796,6 +844,10 @@ def rm_process(args: argparse.Namespace):
     with open(metadata_path, 'w') as f:
         json.dump(full_metadata, f, indent=2)
 
+    # Generate files.zip with PDFs in folder hierarchy
+    log.info("Generating files.zip...")
+    generate_files_zip(output_dir, full_metadata)
+
     if errors:
         errors_path = output_dir / 'errors.json'
         with open(errors_path, 'w') as f:
@@ -815,6 +867,7 @@ def rm_process(args: argparse.Namespace):
         print(f"  {total_thumbnails} thumbnails generated")
     if total_ocr_scans or total_words:
         print(f"  {total_ocr_scans} OCR scans completed ({total_words} words recognised)")
+    print(f"  files.zip generated")
     if errors:
         print(f"  {len(errors)} errors")
 
