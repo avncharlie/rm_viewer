@@ -25,8 +25,8 @@ def setup_logger(log):
     handler = logging.StreamHandler(sys.stdout)
     formatter = CustomFormatter("%(levelname)s - %(name)s - %(message)s")
     handler.setFormatter(formatter)
-    # log.setLevel(logging.INFO)
-    log.setLevel(logging.DEBUG)
+    log.setLevel(logging.INFO)
+    # log.setLevel(logging.DEBUG)
     log.addHandler(handler)
     log.propagate = False
 

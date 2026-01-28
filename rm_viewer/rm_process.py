@@ -17,8 +17,6 @@ from rmc.exporters.pdf import rm_to_svg, chrome_svg_to_pdf
 from .utils import validate_path, validate_output_path, get_gcv_api_key
 from .ocr import run_ocr_on_rm_output, add_text_layer_to_page
 
-from .rm_items import RemarkableItem, RemarkableFolder, RemarkableBook
-
 log = logging.getLogger(__name__)
 
 def xx_dir_hash(directory: Path) -> str:
@@ -185,7 +183,7 @@ def build_rm_file_index(
     backing_pdf_file: Path | None,
     api_key: str | None = None,
     old_rm_files: list[dict] | None = None
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     '''
     Build index of .rm files with their page mappings and convert to PDF.
 
@@ -197,9 +195,10 @@ def build_rm_file_index(
     :param backing_pdf_file: Path to backing PDF, or None
     :param api_key: Google Cloud Vision API key for OCR
     :param old_rm_files: Previous rm_files metadata for OCR caching
-    :returns: List of dicts with page_id, path, index, backing_pdf_index, ocr_path
+    :returns: Tuple of (list of dicts with page_id, path, index, backing_pdf_index, ocr_path; new OCR scan count)
     '''
     rm_files = []
+    new_ocr_count = 0
     redir_map = get_page_redir_map(content)
 
     # Build lookup of old page data by page_id for OCR caching
@@ -252,7 +251,7 @@ def build_rm_file_index(
                 old_ocr_full_path = base_output_dir / old_page['ocr_path']
                 if old_ocr_full_path.exists():
                     ocr_path = old_page['ocr_path']
-                    log.info(f"Reusing OCR for page {page_id}")
+                    log.debug(f"Reusing OCR for page {page_id}")
 
             if not ocr_path:
                 # Run fresh OCR
@@ -262,6 +261,7 @@ def build_rm_file_index(
                 )
                 if ocr_result:
                     ocr_path = str(ocr_json_path.relative_to(base_output_dir))
+                    new_ocr_count += 1
 
         rm_files.append({
             'page_id': page_id,
@@ -276,7 +276,164 @@ def build_rm_file_index(
     if backing_pdf_doc:
         backing_pdf_doc.close()
 
-    return rm_files
+    return rm_files, new_ocr_count
+
+
+def build_page_index(
+    rm_file_dir: Path | None,
+    pages: list[str],
+    content: dict
+) -> list[dict]:
+    """Build index of ALL pages with their cache keys.
+
+    Returns list of dicts with:
+        - page_id: str
+        - index: int
+        - backing_pdf_index: int | None
+        - rm_hash: str | None
+    """
+    redir_map = get_page_redir_map(content)
+
+    # Build set of page IDs that have .rm files
+    rm_hashes = {}
+    if rm_file_dir and rm_file_dir.exists():
+        for f in rm_file_dir.rglob('*.rm'):
+            page_id = f.stem
+            rm_hashes[page_id] = hashlib.md5(f.read_bytes()).hexdigest()
+
+    page_index = []
+    for idx, page_id in enumerate(pages):
+        page_index.append({
+            'page_id': page_id,
+            'index': idx,
+            'backing_pdf_index': redir_map.get(page_id),
+            'rm_hash': rm_hashes.get(page_id)
+        })
+
+    return page_index
+
+
+def generate_thumbnails(
+    output_pdf: Path,
+    thumbnail_dir: Path,
+    base_output_dir: Path,
+    page_index: list[dict],
+    old_thumbnail_pages: list[dict] | None = None
+) -> tuple[list[dict], int]:
+    """Generate thumbnails for all pages with caching support.
+
+    :param output_pdf: Path to the final output PDF
+    :param thumbnail_dir: Directory to store thumbnails
+    :param base_output_dir: Base output directory for relative paths
+    :param page_index: List of page metadata from build_page_index()
+    :param old_thumbnail_pages: Previous thumbnail_pages metadata for caching
+    :returns: Tuple of (list of thumbnail metadata dicts, count of new thumbnails generated)
+    """
+    target_width = 384
+    target_height = 512
+
+    # Build lookup of old pages by page_id
+    old_pages_by_id = {}
+    if old_thumbnail_pages:
+        for old_page in old_thumbnail_pages:
+            old_page_id = old_page.get('page_id', '')
+            if old_page_id:
+                old_pages_by_id[old_page_id] = old_page
+
+    doc = fitz.open(output_pdf)
+    thumbnail_pages = []
+    new_thumbnails_count = 0
+
+    for page_info in page_index:
+        page_id = page_info['page_id']
+        page_idx = page_info['index']
+        backing_pdf_index = page_info['backing_pdf_index']
+        rm_hash = page_info['rm_hash']
+
+        thumbnail_path = thumbnail_dir / f'{page_idx} - {page_id}.png'
+        thumbnail_rel_path = str(thumbnail_path.relative_to(base_output_dir))
+
+        # Check if cache is valid - search by UUID to handle page reordering
+        old_page = old_pages_by_id.get(page_id)
+        can_reuse = False
+        existing_thumbnails = list(thumbnail_dir.glob(f'* - {page_id}.png'))
+        existing_thumbnail = existing_thumbnails[0] if existing_thumbnails else None
+
+        if old_page and existing_thumbnail:
+            old_backing_idx = old_page.get('backing_pdf_index')
+            old_rm_hash = old_page.get('rm_hash')
+            # Cache valid if both backing_pdf_index AND rm_hash match
+            if old_backing_idx == backing_pdf_index and old_rm_hash == rm_hash:
+                # Special case: inserted blank page (None, None) - always regenerate
+                if backing_pdf_index is None and rm_hash is None:
+                    can_reuse = False
+                else:
+                    can_reuse = True
+                    # Rename if page number changed
+                    if existing_thumbnail != thumbnail_path:
+                        log.debug(f"Renaming thumbnail: {existing_thumbnail.name} -> {thumbnail_path.name}")
+                        existing_thumbnail.rename(thumbnail_path)
+
+        if can_reuse:
+            log.debug(f"Reusing thumbnail for page {page_idx}")
+            thumbnail_pages.append({
+                'page_id': page_id,
+                'index': page_idx,
+                'backing_pdf_index': backing_pdf_index,
+                'rm_hash': rm_hash,
+                'thumbnail_path': thumbnail_rel_path
+            })
+            continue
+
+        # Render new thumbnail
+        if page_idx >= len(doc):
+            log.warning(f"Page index {page_idx} out of range for {output_pdf}")
+            continue
+
+        page = doc[page_idx]
+
+        # Calculate zoom factor to fit page into 384x512
+        page_rect = page.rect
+        zoom_x = target_width / page_rect.width
+        zoom_y = target_height / page_rect.height
+        zoom = min(zoom_x, zoom_y)  # Maintain aspect ratio
+
+        matrix = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=matrix)
+
+        # Create a 384x512 white background and center the thumbnail
+        thumb = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, target_width, target_height), 0)
+        thumb.set_rect(thumb.irect, (255, 255, 255))  # White background
+
+        # Calculate centering offsets
+        x_offset = (target_width - pix.width) // 2
+        y_offset = (target_height - pix.height) // 2
+
+        # Copy the rendered page onto the thumbnail
+        thumb.copy(pix, (x_offset, y_offset))
+        thumb.save(thumbnail_path)
+        new_thumbnails_count += 1
+
+        log.info(f"Generated thumbnail for page {page_idx}: {thumbnail_path.name}")
+
+        thumbnail_pages.append({
+            'page_id': page_id,
+            'index': page_idx,
+            'backing_pdf_index': backing_pdf_index,
+            'rm_hash': rm_hash,
+            'thumbnail_path': thumbnail_rel_path
+        })
+
+    doc.close()
+
+    # Clean up orphaned thumbnails (wrong page number or deleted pages)
+    current_thumbnail_names = {f'{p["index"]} - {p["page_id"]}.png' for p in thumbnail_pages}
+    for f in thumbnail_dir.glob('*.png'):
+        if f.name not in current_thumbnail_names:
+            log.info(f"Removing orphaned thumbnail: {f.name}")
+            f.unlink()
+
+    return thumbnail_pages, new_thumbnails_count
 
 
 def stitch_ocr_text_layers(
@@ -284,7 +441,7 @@ def stitch_ocr_text_layers(
     rm_files: list[dict],
     base_output_dir: Path,
     debug: bool = False
-) -> int:
+) -> tuple[int, int]:
     """
     Stitch OCR text layers into the final remarks PDF.
 
@@ -292,10 +449,11 @@ def stitch_ocr_text_layers(
     :param rm_files: List of rm file dicts with ocr_path entries
     :param base_output_dir: Base output directory for resolving relative paths
     :param debug: If True, make text visible for debugging
-    :returns: Number of pages with OCR text added
+    :returns: Tuple of (number of pages with OCR text added, total words added)
     """
     doc = fitz.open(output_pdf)
     pages_with_ocr = 0
+    total_words = 0
 
     for rm_file in rm_files:
         ocr_rel_path = rm_file.get('ocr_path')
@@ -324,6 +482,7 @@ def stitch_ocr_text_layers(
 
             if words_added > 0:
                 pages_with_ocr += 1
+                total_words += words_added
                 log.debug(f"Added {words_added} words to page {page_index}")
 
         except Exception as e:
@@ -332,7 +491,7 @@ def stitch_ocr_text_layers(
     doc.save(output_pdf, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
     doc.close()
 
-    return pages_with_ocr
+    return pages_with_ocr, total_words
 
 
 def parse_item(
@@ -342,7 +501,7 @@ def parse_item(
     old_item: dict | None,
     api_key: str | None = None,
     ocr_debug: bool = False
-) -> tuple[dict, str]:
+) -> tuple[dict, str, dict]:
     '''
     Given item ID and xochitl files, generate output folder containing
     thumbnails, OCR-ed output pdf and extracted text. Returns metadata for item.
@@ -352,8 +511,9 @@ def parse_item(
     :param files: xochitl files corresponding to item
     :param old_item: Existing metadata for this specific item (if any)
     :param output_dir: directory to put output
-    :returns: tuple of (metadata dict, status string)
+    :returns: tuple of (metadata dict, status string, stats dict)
               status is one of: 'created', 'modified', 'unchanged', 'skipped'
+              stats contains: thumbnails_generated, ocr_scans, words_recognized
     '''
     # Get metadata and content
     metadata = {}
@@ -379,16 +539,16 @@ def parse_item(
                     last_opened_page = pages.index(last) + 1
 
 
-    # if name != 'Colours': return {}, 'skipped'
+    if name != 'Colours': return {}, 'skipped', {}
 
     # Skip empty items
     if not content and not metadata:
-        return {}, 'skipped'
+        return {}, 'skipped', {}
 
     # Skip deleted items
     if 'parent' in metadata and metadata['parent'] == 'trash':
         log.info(f'Skipping deleted item: {name}')
-        return {}, 'skipped'
+        return {}, 'skipped', {}
 
     # Return info for folders
     is_folder = len(files) == 1 or not content
@@ -399,7 +559,7 @@ def parse_item(
             'id': id,
             'name': name,
             'parent': parent
-        }, status
+        }, status, {}
 
     # For books: compute source hash and check against old
     source_hash = compute_source_hash(id, files)
@@ -422,7 +582,7 @@ def parse_item(
             result = old_item.copy()
             result['name'] = name
             result['parent'] = parent
-            return result, 'unchanged'
+            return result, 'unchanged', {}
 
     # Hash changed or new item - do full processing
     log.info(f'Processing item: {name}')
@@ -432,10 +592,10 @@ def parse_item(
     # Get old rm_files for OCR caching (before we modify anything)
     old_rm_files = old_item.get('rm_files', []) if old_item else []
 
-    # Delete directories EXCEPT rm_output (needed for OCR cache)
+    # Delete directories EXCEPT rm_output (needed for OCR cache) and thumbnails (for thumbnail cache)
     if nb_output_dir.exists():
         for child in nb_output_dir.iterdir():
-            if child.name != 'rm_output':
+            if child.name not in ('rm_output', 'thumbnails'):
                 if child.is_dir():
                     shutil.rmtree(child)
                 else:
@@ -479,8 +639,9 @@ def parse_item(
 
     # Build rm_file index (with OCR if api_key available)
     rm_files = []
+    new_ocr_scans = 0
     if rm_file_dir:
-        rm_files = build_rm_file_index(
+        rm_files, new_ocr_scans = build_rm_file_index(
             rm_file_dir, nb_rm_output_dir, output_dir, pages, content, backing_pdf_file,
             api_key=api_key,
             old_rm_files=old_rm_files
@@ -498,8 +659,24 @@ def parse_item(
             f.unlink()
 
     # Stitch OCR text layers into the final PDF
+    ocr_words = 0
     if rm_files:
-        stitch_ocr_text_layers(output_pdf, rm_files, output_dir, debug=ocr_debug)
+        _, ocr_words = stitch_ocr_text_layers(output_pdf, rm_files, output_dir, debug=ocr_debug)
+
+    # Build page index for thumbnails
+    page_index = build_page_index(rm_file_dir, pages, content)
+
+    # Get old thumbnail metadata
+    old_thumbnail_pages = old_item.get('thumbnail_pages', []) if old_item else []
+
+    # Generate thumbnails
+    thumbnail_pages, new_thumbnails = generate_thumbnails(
+        output_pdf,
+        nb_thumbnail_dir,
+        output_dir,
+        page_index,
+        old_thumbnail_pages
+    )
 
     xochitl_dir = str(nb_xochitl_dir.relative_to(output_dir))
     output_pdf = str(output_pdf.relative_to(output_dir))
@@ -509,6 +686,11 @@ def parse_item(
     xochitl_dir_hash = xx_dir_hash(nb_xochitl_dir)
 
     status = 'modified' if old_item else 'created'
+    stats = {
+        'thumbnails_generated': new_thumbnails,
+        'ocr_scans': new_ocr_scans,
+        'words_recognized': ocr_words
+    }
     return {
         'type': 'book',
         'id': id,
@@ -523,10 +705,11 @@ def parse_item(
         'xochitl_dir_hash': xochitl_dir_hash,
 
         'rm_files': rm_files,
+        'thumbnail_pages': thumbnail_pages,
 
         'last_opened_page': last_opened_page,
         'total_pages': len(pages)
-    }, status
+    }, status, stats
 
 def try_get_name(files: list[Path]):
     for file in files:
@@ -566,6 +749,11 @@ def rm_process(args: argparse.Namespace):
     processed_ids = set()
     summary = {'created': [], 'modified': [], 'deleted': [], 'unchanged': []}
 
+    # Stats accumulators
+    total_thumbnails = 0
+    total_ocr_scans = 0
+    total_words = 0
+
     full_metadata = []
     errors = []
 
@@ -573,12 +761,16 @@ def rm_process(args: argparse.Namespace):
     for id, files in id_filemap.items():
         old_item = old_items_by_id.get(id)
         try:
-            result, status = parse_item(id, files, output_dir, old_item, api_key=api_key, ocr_debug=ocr_debug)
+            result, status, stats = parse_item(id, files, output_dir, old_item, api_key=api_key, ocr_debug=ocr_debug)
             if result:
                 full_metadata.append(result)
                 processed_ids.add(id)
                 if status in summary:
                     summary[status].append(result.get('name', id))
+                # Accumulate stats
+                total_thumbnails += stats.get('thumbnails_generated', 0)
+                total_ocr_scans += stats.get('ocr_scans', 0)
+                total_words += stats.get('words_recognized', 0)
         except Exception:
             name = try_get_name(files)
             tb = traceback.format_exc()
@@ -619,6 +811,10 @@ def rm_process(args: argparse.Namespace):
         print(f"  {len(summary['deleted'])} notebooks deleted: {', '.join(summary['deleted'])}")
     if summary['unchanged']:
         print(f"  {len(summary['unchanged'])} notebooks unchanged (skipped)")
+    if total_thumbnails:
+        print(f"  {total_thumbnails} thumbnails generated")
+    if total_ocr_scans or total_words:
+        print(f"  {total_ocr_scans} OCR scans completed ({total_words} words recognised)")
     if errors:
         print(f"  {len(errors)} errors")
 
