@@ -60,6 +60,88 @@ html, body {
   }
 }
 
+/* List view */
+.rm_grid.list_view {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.rm_grid.list_view .document {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--bgDark);
+  transition: background-color 0.15s;
+}
+
+.rm_grid.list_view .document:hover {
+  background-color: var(--bgDark);
+}
+
+/* Disable the thumbnail shadow hover in list view */
+.rm_grid.list_view .document:hover .thumbnail img {
+  box-shadow: none;
+}
+
+.rm_grid.list_view .thumbnail {
+  flex-shrink: 0;
+  width: 50px;
+}
+
+.rm_grid.list_view .thumbnail img {
+  width: 100%;
+  height: auto;
+}
+
+.rm_grid.list_view .doc_text1 {
+  margin-top: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.rm_grid.list_view .doc_text2 {
+  margin-top: 0;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* Folders in list view */
+#folder_grid.list_view {
+  margin-bottom: 0px;
+  background-color: transparent;
+}
+
+#folder_grid.list_view .folder {
+  width: 100%;
+  background-color: transparent;
+  border-bottom: 1px solid var(--bgDark);
+  height: auto;
+  padding: 10px;
+}
+
+#folder_grid.list_view .folder:hover {
+  background-color: var(--bgDark);
+}
+
+#folder_grid.list_view .folder span:not(.folder_info) {
+  flex: 1;
+}
+
+#folder_grid.list_view .folder .folder_info {
+  display: block;
+  flex-shrink: 0;
+  font-weight: 300;
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+/* Hide folder info in grid view */
+.folder .folder_info {
+  display: none;
+}
+
 #folder_grid {
   margin-bottom: 30px;
 }
@@ -170,7 +252,7 @@ html, body {
   font-size: 1.1rem;
   white-space: nowrap;
   overflow-x: auto;
-  margin-bottom: 20px;
+  margin-bottom: 15px;
   scrollbar-width: thin;
   scrollbar-color: var(--bgMoreDark) var(--bgLight);
 }
@@ -233,7 +315,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 15px;
   gap: 10px;
 }
 

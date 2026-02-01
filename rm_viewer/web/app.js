@@ -16,10 +16,12 @@ function renderFolders(folders) {
     btn.innerHTML = `
       ${folder.empty ? FOLDER_EMPTY_ICON : FOLDER_ICON}
       <span>${folder.name}</span>
+      <span class="folder_info">${folder.info || ''}</span>
     `;
     grid.appendChild(btn);
   });
 }
+
 
 function renderDocuments(documents) {
   const grid = document.getElementById('document_grid');
@@ -41,13 +43,14 @@ function renderDocuments(documents) {
 
 // Usage:
 renderFolders([
-  { name: 'Articles', empty: false },
-  { name: 'Books', empty: false },
-  { name: 'Comics', empty: false },
-  { name: 'Development', empty: false },
-  { name: 'Papers', empty: false },
-  { name: 'Recipes', empty: true },
+  { name: 'Articles', empty: false, info: '12 items' },
+  { name: 'Books', empty: false, info: '8 items' },
+  { name: 'Comics', empty: false, info: '3 items' },
+  { name: 'Development', empty: false, info: '25 items' },
+  { name: 'Papers', empty: false, info: '7 items' },
+  { name: 'Recipes', empty: true, info: '0 items' },
 ]);
+
 
 // Usage:
 renderDocuments([
@@ -173,6 +176,9 @@ const gridSizes = {
   list: { desktop: '100%', mobile: '100%' }
 };
 
+const folderGrid = document.getElementById('folder_grid');
+const documentGrid = document.getElementById('document_grid');
+
 // Grid option click
 gridOptions.forEach(option => {
   option.addEventListener('click', (e) => {
@@ -183,10 +189,19 @@ gridOptions.forEach(option => {
     const gridType = option.dataset.grid;
     gridLabel.textContent = gridLabels[gridType];
     
-    // Apply grid sizes
-    const sizes = gridSizes[gridType];
-    document.documentElement.style.setProperty('--grid-min-width', sizes.desktop);
-    document.documentElement.style.setProperty('--grid-min-width-mobile', sizes.mobile);
+    // Handle list view differently
+    if (gridType === 'list') {
+      folderGrid.classList.add('list_view');
+      documentGrid.classList.add('list_view');
+    } else {
+      folderGrid.classList.remove('list_view');
+      documentGrid.classList.remove('list_view');
+      
+      // Apply grid sizes
+      const sizes = gridSizes[gridType];
+      document.documentElement.style.setProperty('--grid-min-width', sizes.desktop);
+      document.documentElement.style.setProperty('--grid-min-width-mobile', sizes.mobile);
+    }
     
     console.log('Grid:', gridType);
   });
