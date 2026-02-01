@@ -32,7 +32,6 @@ html, body {
   font-family: "reMarkable Sans", sans-serif;
   background-color: var(--bgLight);
   color: var(--dark);
-
 }
 
 * { box-sizing: border-box; }
@@ -68,7 +67,6 @@ html, body {
   text-align: left;
   color: inherit;
   -webkit-tap-highlight-color: transparent;
-
   background-color: var(--bgDark);
   height: 40px;
   display: flex;
@@ -105,9 +103,6 @@ html, body {
   white-space: nowrap;
 }
 
-.document {
-}
-
 .doc_text1 {
   margin-top: 7px;
   font-size: 1rem;
@@ -136,11 +131,11 @@ html, body {
   box-shadow: 0 0 13px rgba(0, 0, 0, 0.15);
 }
 
-/* Notebook thumbnails - rounded corners on bottom and top right and
- * binder bar on left. */
+/* Notebook thumbnails */
 .notebook_thumbnail {
   position: relative;
 }
+
 .notebook_thumbnail::before {
   content: '';
   position: absolute;
@@ -151,16 +146,16 @@ html, body {
   background-color: var(--bgDark);
   border-radius: 2px 0 0 2px;
 }
+
 .notebook_thumbnail img {
   border-radius: 0 10px 10px 0;
 }
 
-/* PDF thumbnails have no special styling */
-/* ebook thumbnails - rounded corners on bottom and top right */
 .ebook_thumbnail img {
   border-radius: 0 10px 10px 0;
 }
 
+/* Breadcrumbs */
 #breadcrumbs {
   display: flex;
   align-items: center;
@@ -169,26 +164,24 @@ html, body {
   white-space: nowrap;
   overflow-x: auto;
   margin-bottom: 20px;
-}
-
-/* Custom scrollbar */
-/* Firefox */
-#breadcrumbs {
   scrollbar-width: thin;
   scrollbar-color: var(--bgMoreDark) var(--bgLight);
 }
-/* Chrome, Safari, Edge */
+
 #breadcrumbs::-webkit-scrollbar {
   height: 6px;
 }
+
 #breadcrumbs::-webkit-scrollbar-track {
   background: var(--bgLight);
   border-radius: 3px;
 }
+
 #breadcrumbs::-webkit-scrollbar-thumb {
   background: var(--bgMoreDark);
   border-radius: 3px;
 }
+
 #breadcrumbs::-webkit-scrollbar-thumb:hover {
   background: var(--bgDark);
 }
@@ -202,13 +195,15 @@ html, body {
   border-radius: 3px;
   font-weight: 300;
 }
+
 .breadcrumb_item:hover {
-  background-color: var(--bgDark); 
+  background-color: var(--bgDark);
 }
 
 .breadcrumb_current {
   cursor: default;
 }
+
 .breadcrumb_current:hover {
   background-color: inherit;
 }
@@ -226,18 +221,29 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Toolbar */
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+
+/* Search Bar */
 #search_bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  background-color: var(--bgDark);
-  padding: 8px 14px;
-  margin-bottom: 15px;
-  transition: background-color 0.15s;
+  padding: 6px 0;
+  flex: 1;
+  min-width: 150px;
+  border-bottom: 1px solid var(--bgMoreDark);
+  transition: border-color 0.15s, flex-grow 0.3s ease;
 }
 
 #search_bar:focus-within {
-  background-color: var(--bgMoreDark);
+  border-bottom-color: var(--dark);
 }
 
 #search_bar svg {
@@ -245,6 +251,10 @@ html, body {
   height: 20px;
   fill: var(--dark);
   flex-shrink: 0;
+  opacity: 0.5;
+}
+
+#search_bar:focus-within svg {
   opacity: 0.7;
 }
 
@@ -260,5 +270,203 @@ html, body {
 
 #search_input::placeholder {
   color: var(--dark);
-  opacity: 0.5;
+  opacity: 0.4;
+}
+
+/* Sort Widget */
+#sort_widget {
+  position: relative;
+  transition: opacity 0.2s ease, visibility 0.2s ease, width 0.3s ease;
+}
+
+/* When search is focused, hide sort widget */
+#toolbar.search_focused #sort_widget {
+  opacity: 0;
+  visibility: hidden;
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#toolbar.search_focused #search_bar {
+  flex-grow: 10;
+}
+
+#sort_button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--dark);
+  cursor: pointer;
+  transition: background-color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+#sort_button:hover {
+  background-color: var(--bgDark);
+}
+
+#sort_button .sort_chevron {
+  width: 18px;
+  height: 18px;
+  fill: var(--dark);
+  transition: transform 0.2s;
+}
+
+#sort_widget.open #sort_button .sort_chevron {
+  transform: rotate(180deg);
+}
+
+/* Dropdown */
+#sort_dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: white;
+  border: 1px solid var(--bgMoreDark);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+}
+
+#sort_dropdown.hidden {
+  display: none;
+}
+
+.sort_header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-size: 1rem;
+  font-weight: 450;
+  border-bottom: 1px solid var(--bgDark);
+  cursor: pointer;
+}
+
+.sort_header:hover {
+  background-color: var(--bgLight);
+}
+
+.sort_header svg {
+  width: 18px;
+  height: 18px;
+  fill: var(--dark);
+}
+
+.sort_options {
+  border-bottom: 1px solid var(--bgDark);
+}
+
+.sort_option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--dark);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.1s;
+}
+
+.sort_option:hover {
+  background-color: var(--bgLight);
+}
+
+.sort_option.selected {
+  background-color: var(--dark);
+  color: white;
+}
+
+.sort_option.selected:hover {
+  background-color: var(--dark);
+}
+
+/* Sort icons - always take up space, visible only on selected */
+.sort_option .sort_icon {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+/* Show asc icon but invisible (takes up space) */
+.sort_option .sort_asc {
+  display: block;
+  visibility: hidden;
+}
+
+/* Hide desc icon completely by default */
+.sort_option .sort_desc {
+  display: none;
+}
+
+/* When selected (ascending): show asc icon */
+.sort_option.selected:not(.desc) .sort_asc {
+  visibility: visible;
+}
+
+/* When selected (descending): hide asc, show desc */
+.sort_option.selected.desc .sort_asc {
+  display: none;
+}
+
+.sort_option.selected.desc .sort_desc {
+  display: block;
+}
+
+/* Grid section */
+.grid_section {
+  padding: 12px 16px;
+}
+
+.grid_label {
+  font-size: 0.95rem;
+  font-weight: 450;
+  margin-bottom: 10px;
+}
+
+.grid_options {
+  display: flex;
+  /* gap: 8px; */
+}
+
+.grid_option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 45px;
+  height: 45px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.grid_option:hover {
+  background-color: var(--bgDark);
+}
+
+.grid_option.selected {
+  background-color: var(--dark);
+}
+
+.grid_option svg {
+  width: 22px;
+  height: 22px;
+  fill: var(--dark);
+}
+
+.grid_option.selected svg {
+  fill: white;
 }

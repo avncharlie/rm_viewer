@@ -107,3 +107,102 @@ renderBreadcrumbs([
   { id: 'theology', name: 'Systematic Theology' },
   { id: 'theology', name: 'Systematic Theology' },
 ]);
+
+const sortButton = document.getElementById('sort_button');
+const sortDropdown = document.getElementById('sort_dropdown');
+const sortWidget = document.getElementById('sort_widget');
+const sortLabel = document.getElementById('sort_label');
+const sortHeader = document.querySelector('.sort_header');
+const sortOptions = document.querySelectorAll('.sort_option');
+const gridOptions = document.querySelectorAll('.grid_option');
+const gridLabel = document.getElementById('grid_label');
+
+const gridLabels = {
+  large: 'Large grid',
+  medium: 'Medium grid',
+  small: 'Small grid',
+  list: 'List view'
+};
+
+// Toggle dropdown
+sortButton.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sortWidget.classList.toggle('open');
+  sortDropdown.classList.toggle('hidden');
+});
+
+// Close dropdown when clicking header
+sortHeader.addEventListener('click', () => {
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+
+// Sort option click
+sortOptions.forEach(option => {
+  option.addEventListener('click', () => {
+    const wasSelected = option.classList.contains('selected');
+    
+    if (wasSelected) {
+      // Toggle ascending/descending
+      option.classList.toggle('desc');
+    } else {
+      // Select new option
+      sortOptions.forEach(o => {
+        o.classList.remove('selected');
+        o.classList.remove('desc');
+      });
+      option.classList.add('selected');
+    }
+    
+    sortLabel.textContent = option.querySelector('span').textContent;
+    
+    // Trigger your sort logic here
+    const sortType = option.dataset.sort;
+    const isDesc = option.classList.contains('desc');
+    console.log('Sort by:', sortType, isDesc ? 'desc' : 'asc');
+    
+    // Dropdown stays open - user can click header or outside to close
+  });
+});
+
+// Grid option click
+gridOptions.forEach(option => {
+  option.addEventListener('click', (e) => {
+    e.stopPropagation();
+    gridOptions.forEach(o => o.classList.remove('selected'));
+    option.classList.add('selected');
+    
+    const gridType = option.dataset.grid;
+    gridLabel.textContent = gridLabels[gridType];
+    
+    // Trigger your grid change logic here
+    console.log('Grid:', gridType);
+  });
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', () => {
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+
+sortDropdown.addEventListener('click', (e) => {
+  e.stopPropagation();
+});
+
+const toolbar = document.getElementById('toolbar');
+const searchInput = document.getElementById('search_input');
+
+searchInput.addEventListener('focus', () => {
+  toolbar.classList.add('search_focused');
+  // Close sort dropdown if open
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+
+searchInput.addEventListener('blur', () => {
+  // Small delay to allow clicking on search results if needed
+  setTimeout(() => {
+    toolbar.classList.remove('search_focused');
+  }, 150);
+});
