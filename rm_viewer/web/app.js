@@ -2,10 +2,12 @@ import EmbedPDF from './embedpdf/embedpdf.js';
 
 // ── EmbedPDF viewer ──────────────────────────────────────────────
 
+let docManager;
+let currentPdfUrl;
+
 const viewer = EmbedPDF.init({
   type: 'container',
   target: document.getElementById('pdf-viewer'),
-  src: '/RMViewer.pdf',
   theme: {
     preference: 'light',
     light: {
@@ -50,16 +52,18 @@ const viewer = EmbedPDF.init({
     'annotation',
     'redaction',
     'page-settings',
-    'zoom',
+    ...(window.matchMedia('(max-width: 600px)').matches ? ['zoom'] : []),
     'mode',
     'ui-menu'
   ]
 });
+document.getElementById('pdf-viewer').style.display = 'none';
 
 (async () => {
   const registry = await viewer.registry;
   const commands = registry.getPlugin('commands').provides();
   const ui = registry.getPlugin('ui').provides();
+  docManager = registry.getPlugin('document-manager').provides();
 
   viewer.registerIcon('download', {
     viewBox: '0 0 24 24',
@@ -83,8 +87,7 @@ const viewer = EmbedPDF.init({
     label: 'Download PDF',
     icon: 'download',
     action: () => {
-      const url = viewer.config?.src || '/RMViewer.pdf';
-      window.open(url, '_blank');
+      if (currentPdfUrl) window.open(currentPdfUrl, '_blank');
     }
   });
 
@@ -261,6 +264,16 @@ function renderFolders(folders) {
   });
 }
 
+function openPdfViewer(url) {
+  if (!docManager) return;
+  docManager.closeAllDocuments();
+  docManager.openDocumentUrl({ url, autoActivate: true });
+  currentPdfUrl = url;
+  const el = document.getElementById('pdf-viewer');
+  el.style.display = '';
+  el.classList.remove('closing');
+}
+
 function renderDocuments(documents) {
   const grid = document.getElementById('document_grid');
   grid.innerHTML = '';
@@ -289,6 +302,8 @@ function renderDocuments(documents) {
       <div class='doc_text1'>${doc.name}</div>
       <div class='doc_text2'>${secondaryText}</div>
     `;
+    div.style.cursor = 'pointer';
+    div.addEventListener('click', () => openPdfViewer(doc.src));
     grid.appendChild(div);
   });
 }
@@ -351,9 +366,10 @@ foldersData = [
 ];
 
 documentsData = [
-  { 
-    type: 'notebook', 
-    thumbnail: '/rmviewer.png', 
+  {
+    type: 'notebook',
+    src: '/RMViewer.pdf',
+    thumbnail: '/rmviewer.png',
     name: 'RMViewer',
     currentPage: 1,
     pageCount: 2,
@@ -362,9 +378,10 @@ documentsData = [
     dateCreated: '2025-01-15T10:00:00',
     fileSize: 524000
   },
-  { 
-    type: 'pdf', 
-    thumbnail: '/getting_started.png', 
+  {
+    type: 'pdf',
+    src: '/getting-started.pdf',
+    thumbnail: '/getting_started.png',
     name: 'Getting started',
     currentPage: 5,
     pageCount: 9,
@@ -373,9 +390,10 @@ documentsData = [
     dateCreated: '2024-06-01T12:00:00',
     fileSize: 2150000
   },
-  { 
-    type: 'ebook', 
-    thumbnail: '/everybody_always.png', 
+  {
+    type: 'ebook',
+    src: '/getting-started.pdf',
+    thumbnail: '/everybody_always.png',
     name: 'Everybody, always',
     currentPage: 24,
     pageCount: 300,
