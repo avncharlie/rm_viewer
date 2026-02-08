@@ -1,6 +1,8 @@
 import EmbedPDF from './embedpdf/embedpdf.js';
 
-// ── EmbedPDF viewer ──────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+//   EMBEDPDF VIEWER + CUSTOMISATIONS
+// ---------------------------------------------------------------------------
 
 let docManager;
 let scrollPlugin;
@@ -8,6 +10,7 @@ let searchPlugin;
 let uiPlugin;
 let currentPdfUrl;
 
+// Set a custom theme to match reMarkable theme
 const viewer = EmbedPDF.init({
   type: 'container',
   target: document.getElementById('pdf-viewer'),
@@ -49,19 +52,21 @@ const viewer = EmbedPDF.init({
       }
     }
   },
-  scroll: {
-  },
   disabledCategories: [
     'annotation',
     'redaction',
     'page-settings',
-    ...(window.matchMedia('(max-width: 600px)').matches ? ['zoom'] : []),
+    ...(window.matchMedia('(max-width: 600px)').matches ? ['zoom'] : []), // only set zoom on non-mobile screens
     'mode',
     'ui-menu'
   ]
 });
+// Hide viewer by default
 document.getElementById('pdf-viewer').style.display = 'none';
 
+
+// Add custom icons to the viewer
+//   Wrapped in a IIFE as we await for the reigstry
 (async () => {
   const registry = await viewer.registry;
   const commands = registry.getPlugin('commands').provides();
@@ -71,6 +76,7 @@ document.getElementById('pdf-viewer').style.display = 'none';
   searchPlugin = registry.getPlugin('search').provides();
   uiPlugin = ui;
 
+  // Download icon (very left of screen)
   viewer.registerIcon('download', {
     viewBox: '0 0 24 24',
     paths: [
@@ -79,15 +85,6 @@ document.getElementById('pdf-viewer').style.display = 'none';
       { d: 'M12 4l0 12', stroke: 'currentColor', fill: 'none' }
     ]
   });
-
-  viewer.registerIcon('close-x', {
-    viewBox: '0 0 24 24',
-    paths: [
-      { d: 'M18 6l-12 12', stroke: 'currentColor', fill: 'none' },
-      { d: 'M6 6l12 12', stroke: 'currentColor', fill: 'none' }
-    ]
-  });
-
   commands.registerCommand({
     id: 'custom.download',
     label: 'Download PDF',
@@ -96,25 +93,10 @@ document.getElementById('pdf-viewer').style.display = 'none';
       if (currentPdfUrl) window.open(currentPdfUrl, '_blank');
     }
   });
-
-  commands.registerCommand({
-    id: 'custom.close',
-    label: 'Close',
-    icon: 'close-x',
-    action: () => {
-      const el = document.getElementById('pdf-viewer');
-      el.classList.add('closing');
-      el.addEventListener('transitionend', () => {
-        el.style.display = 'none';
-        el.classList.remove('closing');
-      }, { once: true });
-    }
-  });
-
+  // Position on very left of screen (replacing menu button)
   const schema = ui.getSchema();
   const toolbar = schema.toolbars['main-toolbar'];
   const items = JSON.parse(JSON.stringify(toolbar.items));
-
   const leftGroup = items.find(item => item.id === 'left-group');
   if (leftGroup) {
     const idx = leftGroup.items.findIndex(item => item.id === 'document-menu-button');
@@ -128,6 +110,28 @@ document.getElementById('pdf-viewer').style.display = 'none';
     }
   }
 
+  // Close icon (very right of screen)
+  viewer.registerIcon('close-x', {
+    viewBox: '0 0 24 24',
+    paths: [
+      { d: 'M18 6l-12 12', stroke: 'currentColor', fill: 'none' },
+      { d: 'M6 6l12 12', stroke: 'currentColor', fill: 'none' }
+    ]
+  });
+  commands.registerCommand({
+    id: 'custom.close',
+    label: 'Close',
+    icon: 'close-x',
+    action: () => {
+      const el = document.getElementById('pdf-viewer');
+      el.classList.add('closing');
+      el.addEventListener('transitionend', () => {
+        el.style.display = 'none';
+        el.classList.remove('closing');
+      }, { once: true });
+    }
+  });
+  // Position on very left of right (replacing menu button)
   const rightGroup = items.find(item => item.id === 'right-group');
   if (rightGroup) {
     const idx = rightGroup.items.findIndex(item => item.id === 'comment-button');
@@ -146,7 +150,10 @@ document.getElementById('pdf-viewer').style.display = 'none';
   });
 })();
 
-function fixEmbedPDFToolbar() {
+// EmbedPDF also by default hides the pan and pointer button on small screens,
+// but we don't want this behaviour. So we add a <style> with CSS to force it
+// to stay on screen no matter what.
+function forcePanPointerOnScreen() {
   const container = document.querySelector('embedpdf-container');
   if (!container?.shadowRoot?.querySelector('[data-epdf-i="pan-button"]')) return false;
   if (container.shadowRoot.querySelector('#epdf-toolbar-fix')) return true;
@@ -162,11 +169,24 @@ function fixEmbedPDFToolbar() {
   container.shadowRoot.appendChild(style);
   return true;
 }
-const fixInterval = setInterval(() => { if (fixEmbedPDFToolbar()) clearInterval(fixInterval); }, 100);
+const fixInterval = setInterval(() => { if (forcePanPointerOnScreen()) clearInterval(fixInterval); }, 100);
 setTimeout(() => clearInterval(fixInterval), 10000);
 
-// ── File browser ─────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+//   FILE BROWSER
+// ---------------------------------------------------------------------------
 
+// currently viewed folders and documents
+let foldersData = [];
+let documentsData = [];
+// current sorting method
+let currentSort = { field: 'modified', desc: false };
+
+// for opening documents with embedpdf viewer
+let viewerDocCounter = 0;
+let currentDocId = null;
+
+// ripped from remarkable's own file viewer website lol
 const FOLDER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="48" viewBox="0 0 48 48" fill="currentColor">
   <path d="M21.9891 7L24.9891 14H45.5V41H3.5V7H21.9891ZM21.7252 14L20.0109 10H8C7.17157 10 6.5 10.6716 6.5 11.5V24C6.5 18.4772 10.9772 14 16.5 14H21.7252Z"></path>
 </svg>`;
@@ -175,43 +195,7 @@ const FOLDER_EMPTY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="48" vi
   <path d="M3 7H21.4891L24.4891 14H45V41H3V7ZM16.5 17C10.701 17 6 21.701 6 27.5V38H42V17H16.5ZM19.5109 10H7.5C6.67157 10 6 10.6716 6 11.5V14H21.2252L19.5109 10Z"></path>
 </svg>`;
 
-// Data stores
-let foldersData = [];
-let documentsData = [];
-let currentSort = { field: 'modified', desc: false };
-
-// Helper functions
-function formatDate(date) {
-  const now = new Date();
-  const d = new Date(date);
-  const diffDays = Math.floor((now - d) / (1000 * 60 * 60 * 24));
-  
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return `${diffDays} days ago`;
-  
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function formatFileSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function getDocumentSecondaryText(doc) {
-  if (doc.type === 'ebook') {
-    const percent = Math.round((doc.currentPage / doc.pageCount) * 100);
-    return `Page ${doc.currentPage} of ${doc.pageCount} (${percent}% read)`;
-  }
-  return `Page ${doc.currentPage} of ${doc.pageCount}`;
-}
-
-function getFolderSecondaryText(folder) {
-  return `${folder.itemCount} item${folder.itemCount !== 1 ? 's' : ''}`;
-}
-
-// Sorting functions
+// Sort folders and documents
 function sortItems(items, field, desc, isFolder = false) {
   const sorted = [...items].sort((a, b) => {
     let valA, valB;
@@ -251,6 +235,7 @@ function sortItems(items, field, desc, isFolder = false) {
   return sorted;
 }
 
+// Create html for each folder
 function renderFolders(folders) {
   const grid = document.getElementById('folder_grid');
   grid.innerHTML = '';
@@ -260,7 +245,9 @@ function renderFolders(folders) {
   sortedFolders.forEach(folder => {
     const btn = document.createElement('button');
     btn.className = 'folder';
-    const infoText = getFolderSecondaryText(folder);
+
+    const infoText = `${folder.itemCount} item${folder.itemCount !== 1 ? 's' : ''}`; 
+
     btn.innerHTML = `
       ${folder.itemCount === 0 ? FOLDER_EMPTY_ICON : FOLDER_ICON}
       <span>${folder.name}</span>
@@ -270,39 +257,7 @@ function renderFolders(folders) {
   });
 }
 
-let viewerDocCounter = 0;
-let currentDocId = null;
-
-function openPdfViewer(url, pageNumber, searchQuery) {
-  if (!docManager) return;
-  const prevDocId = currentDocId;
-  const docId = 'viewer-doc-' + (++viewerDocCounter);
-  currentDocId = docId;
-  docManager.openDocumentUrl({ url, documentId: docId, autoActivate: true });
-  if (prevDocId) docManager.closeDocument(prevDocId);
-  currentPdfUrl = url;
-  const el = document.getElementById('pdf-viewer');
-  el.style.display = '';
-  el.classList.remove('closing');
-  const needsSearch = searchQuery && searchPlugin && uiPlugin;
-  const needsScroll = !needsSearch && pageNumber && pageNumber > 1 && scrollPlugin;
-  if (needsScroll || needsSearch) {
-    let unsub;
-    unsub = scrollPlugin.onLayoutReady((event) => {
-      if (event.documentId === docId) {
-        if (needsSearch) {
-          uiPlugin.forDocument(docId).toggleSidebar('right', 'main', 'search-panel');
-          searchPlugin.forDocument(docId).searchAllPages(searchQuery);
-        }
-        if (needsScroll) {
-          scrollPlugin.forDocument(docId).scrollToPage({ pageNumber, behavior: 'instant' });
-        }
-        if (unsub) unsub();
-      }
-    });
-  }
-}
-
+// Create html for each document
 function renderDocuments(documents) {
   const grid = document.getElementById('document_grid');
   grid.innerHTML = '';
@@ -310,10 +265,11 @@ function renderDocuments(documents) {
   const sortedDocs = sortItems(documents, currentSort.field, currentSort.desc, false);
   
   sortedDocs.forEach(doc => {
-    const div = document.createElement('div');
+    const div = document.createElement('button');
     div.className = 'document';
     
     let secondaryText;
+    // on hover, books show percent read
     if (doc.type === 'ebook') {
       const percent = Math.round((doc.currentPage / doc.pageCount) * 100);
       secondaryText = `
@@ -336,6 +292,207 @@ function renderDocuments(documents) {
     grid.appendChild(div);
   });
 }
+
+// Handler for documents - open PDF at page, or with term searched, or just at
+// the start of the pdf.
+function openPdfViewer(url, pageNumber, searchQuery) {
+  if (!docManager) return;
+  const prevDocId = currentDocId;
+  const docId = 'viewer-doc-' + (++viewerDocCounter);
+  currentDocId = docId;
+  docManager.openDocumentUrl({ url, documentId: docId, autoActivate: true });
+  if (prevDocId) docManager.closeDocument(prevDocId);
+  currentPdfUrl = url;
+  const el = document.getElementById('pdf-viewer');
+  el.style.display = '';
+  el.classList.remove('closing');
+  // opening at searchQuery takes precedence over opening at pageNumber
+  const needsSearch = searchQuery && searchPlugin && uiPlugin;
+  const needsScroll = !needsSearch && pageNumber && pageNumber > 1 && scrollPlugin;
+  if (needsScroll || needsSearch) {
+    let unsubscribe;
+    unsubscribe = scrollPlugin.onLayoutReady((event) => {
+      if (event.documentId === docId) {
+        if (needsSearch) {
+          uiPlugin.forDocument(docId).toggleSidebar('right', 'main', 'search-panel');
+          searchPlugin.forDocument(docId).searchAllPages(searchQuery);
+        }
+        if (needsScroll) {
+          scrollPlugin.forDocument(docId).scrollToPage({ pageNumber, behavior: 'instant' });
+        }
+        if (unsubscribe) unsubscribe();
+      }
+    });
+  }
+}
+
+// Breadcrumbs
+const BREADCRUMB_ARROW = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="currentColor">
+  <path d="M15.8787 8.99998L18 6.87866L35.1213 24L18 41.1213L15.8787 39L27.6967 27.182C29.4541 25.4246 29.4541 22.5754 27.6967 20.818L15.8787 8.99998Z"></path>
+</svg>`;
+
+function renderBreadcrumbs(path) {
+  const container = document.getElementById('breadcrumbs');
+  container.innerHTML = '';
+
+  path.forEach((item, index) => {
+    const isFirst = index === 0;
+    const isLast = index === path.length - 1;
+
+    if (!isFirst) {
+      container.insertAdjacentHTML('beforeend', BREADCRUMB_ARROW);
+    }
+
+    const span = document.createElement('span');
+    span.className = 'breadcrumb_item';
+    span.textContent = item.name;
+
+    if (isFirst) {
+      span.classList.add('breadcrumb_root');
+    } else if (isLast) {
+      span.classList.add('breadcrumb_current');
+    } else {
+      span.classList.add('breadcrumb_folder');
+    }
+
+    if (!isLast) {
+      span.addEventListener('click', () => navigateTo(item.id));
+    }
+
+    container.appendChild(span);
+  });
+}
+
+function navigateTo(id) {
+  console.log('Navigate to:', id);
+}
+
+renderBreadcrumbs([
+  { id: 'root', name: 'My files' },
+  { id: 'books', name: 'Books' },
+  { id: 'theology', name: 'Systematic Theology' },
+  { id: 'theology', name: 'Systematic Theology' },
+]);
+
+// Sort menu
+const sortButton = document.getElementById('sort_button');
+const sortDropdown = document.getElementById('sort_dropdown');
+const sortWidget = document.getElementById('sort_widget');
+const sortLabel = document.getElementById('sort_label');
+const sortHeader = document.querySelector('.sort_header');
+const sortOptions = document.querySelectorAll('.sort_option');
+const gridOptions = document.querySelectorAll('.grid_option');
+const gridLabel = document.getElementById('grid_label');
+
+const gridLabels = {
+  large: 'Large grid',
+  medium: 'Medium grid',
+  small: 'Small grid',
+  list: 'List view'
+};
+
+// Toggle dropdown
+sortButton.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sortWidget.classList.toggle('open');
+  sortDropdown.classList.toggle('hidden');
+});
+
+// Close dropdown when clicking header
+sortHeader.addEventListener('click', () => {
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+
+// Sort option click
+sortOptions.forEach(option => {
+  option.addEventListener('click', () => {
+    const wasSelected = option.classList.contains('selected');
+    const sortField = option.dataset.sort;
+    
+    if (wasSelected) {
+      // Toggle ascending/descending
+      option.classList.toggle('desc');
+      currentSort.desc = option.classList.contains('desc');
+    } else {
+      // Select new option
+      sortOptions.forEach(o => {
+        o.classList.remove('selected');
+        o.classList.remove('desc');
+      });
+      option.classList.add('selected');
+      currentSort.field = sortField;
+      currentSort.desc = false;
+    }
+    
+    sortLabel.textContent = option.querySelector('span').textContent;
+    
+    // Re-render with new sort
+    refreshView();
+  });
+});
+
+const gridSizes = {
+  large: { desktop: '280px', mobile: '200px' },
+  medium: { desktop: '200px', mobile: '170px' },
+  small: { desktop: '150px', mobile: '100px' },
+  list: { desktop: '100%', mobile: '100%' }
+};
+
+const folderGrid = document.getElementById('folder_grid');
+const documentGrid = document.getElementById('document_grid');
+
+// Grid option click
+gridOptions.forEach(option => {
+  option.addEventListener('click', (e) => {
+    e.stopPropagation();
+    gridOptions.forEach(o => o.classList.remove('selected'));
+    option.classList.add('selected');
+    
+    const gridType = option.dataset.grid;
+    gridLabel.textContent = gridLabels[gridType];
+    
+    if (gridType === 'list') {
+      folderGrid.classList.add('list_view');
+      documentGrid.classList.add('list_view');
+      document.body.classList.add('list_view_active');
+    } else {
+      folderGrid.classList.remove('list_view');
+      documentGrid.classList.remove('list_view');
+      document.body.classList.remove('list_view_active');
+      
+      const sizes = gridSizes[gridType];
+      document.documentElement.style.setProperty('--grid-min-width', sizes.desktop);
+      document.documentElement.style.setProperty('--grid-min-width-mobile', sizes.mobile);
+    }
+  });
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', () => {
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+
+sortDropdown.addEventListener('click', (e) => {
+  // If sort dropdown clicked, stop click propagation so it doesn't trigger
+  // global handler and close the dropdown.
+  e.stopPropagation();
+});
+
+// Hide sorting options when search is focussed
+const toolbar = document.getElementById('toolbar');
+const searchInput = document.getElementById('search_input');
+searchInput.addEventListener('focus', () => {
+  toolbar.classList.add('search_focused');
+  sortDropdown.classList.add('hidden');
+  sortWidget.classList.remove('open');
+});
+searchInput.addEventListener('blur', () => {
+  setTimeout(() => {
+    toolbar.classList.remove('search_focused');
+  }, 150);
+});
 
 function refreshView() {
   renderFolders(foldersData);
@@ -438,173 +595,6 @@ documentsData = [
     openAtSearch: 'love'
   },
 ];
-
-const BREADCRUMB_ARROW = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="currentColor">
-  <path d="M15.8787 8.99998L18 6.87866L35.1213 24L18 41.1213L15.8787 39L27.6967 27.182C29.4541 25.4246 29.4541 22.5754 27.6967 20.818L15.8787 8.99998Z"></path>
-</svg>`;
-
-function renderBreadcrumbs(path) {
-  const container = document.getElementById('breadcrumbs');
-  container.innerHTML = '';
-
-  path.forEach((item, index) => {
-    const isFirst = index === 0;
-    const isLast = index === path.length - 1;
-
-    if (!isFirst) {
-      container.insertAdjacentHTML('beforeend', BREADCRUMB_ARROW);
-    }
-
-    const span = document.createElement('span');
-    span.className = 'breadcrumb_item';
-    span.textContent = item.name;
-
-    if (isFirst) {
-      span.classList.add('breadcrumb_root');
-    } else if (isLast) {
-      span.classList.add('breadcrumb_current');
-    } else {
-      span.classList.add('breadcrumb_folder');
-    }
-
-    if (!isLast) {
-      span.addEventListener('click', () => navigateTo(item.id));
-    }
-
-    container.appendChild(span);
-  });
-}
-
-function navigateTo(id) {
-  console.log('Navigate to:', id);
-}
-
-renderBreadcrumbs([
-  { id: 'root', name: 'My files' },
-  { id: 'books', name: 'Books' },
-  { id: 'theology', name: 'Systematic Theology' },
-  { id: 'theology', name: 'Systematic Theology' },
-]);
-
-/////////////////////////////////////////////////////////////
-
-const sortButton = document.getElementById('sort_button');
-const sortDropdown = document.getElementById('sort_dropdown');
-const sortWidget = document.getElementById('sort_widget');
-const sortLabel = document.getElementById('sort_label');
-const sortHeader = document.querySelector('.sort_header');
-const sortOptions = document.querySelectorAll('.sort_option');
-const gridOptions = document.querySelectorAll('.grid_option');
-const gridLabel = document.getElementById('grid_label');
-
-const gridLabels = {
-  large: 'Large grid',
-  medium: 'Medium grid',
-  small: 'Small grid',
-  list: 'List view'
-};
-
-// Toggle dropdown
-sortButton.addEventListener('click', (e) => {
-  e.stopPropagation();
-  sortWidget.classList.toggle('open');
-  sortDropdown.classList.toggle('hidden');
-});
-
-// Close dropdown when clicking header
-sortHeader.addEventListener('click', () => {
-  sortDropdown.classList.add('hidden');
-  sortWidget.classList.remove('open');
-});
-
-// Sort option click
-sortOptions.forEach(option => {
-  option.addEventListener('click', () => {
-    const wasSelected = option.classList.contains('selected');
-    const sortField = option.dataset.sort;
-    
-    if (wasSelected) {
-      // Toggle ascending/descending
-      option.classList.toggle('desc');
-      currentSort.desc = option.classList.contains('desc');
-    } else {
-      // Select new option
-      sortOptions.forEach(o => {
-        o.classList.remove('selected');
-        o.classList.remove('desc');
-      });
-      option.classList.add('selected');
-      currentSort.field = sortField;
-      currentSort.desc = false;
-    }
-    
-    sortLabel.textContent = option.querySelector('span').textContent;
-    
-    // Re-render with new sort
-    refreshView();
-  });
-});
-
-const gridSizes = {
-  large: { desktop: '280px', mobile: '200px' },
-  medium: { desktop: '200px', mobile: '170px' },
-  small: { desktop: '150px', mobile: '100px' },
-  list: { desktop: '100%', mobile: '100%' }
-};
-
-const folderGrid = document.getElementById('folder_grid');
-const documentGrid = document.getElementById('document_grid');
-
-// Grid option click
-gridOptions.forEach(option => {
-  option.addEventListener('click', (e) => {
-    e.stopPropagation();
-    gridOptions.forEach(o => o.classList.remove('selected'));
-    option.classList.add('selected');
-    
-    const gridType = option.dataset.grid;
-    gridLabel.textContent = gridLabels[gridType];
-    
-    if (gridType === 'list') {
-      folderGrid.classList.add('list_view');
-      documentGrid.classList.add('list_view');
-      document.body.classList.add('list_view_active');
-    } else {
-      folderGrid.classList.remove('list_view');
-      documentGrid.classList.remove('list_view');
-      document.body.classList.remove('list_view_active');
-      
-      const sizes = gridSizes[gridType];
-      document.documentElement.style.setProperty('--grid-min-width', sizes.desktop);
-      document.documentElement.style.setProperty('--grid-min-width-mobile', sizes.mobile);
-    }
-  });
-});
-
-// Close dropdown when clicking outside
-document.addEventListener('click', () => {
-  sortDropdown.classList.add('hidden');
-  sortWidget.classList.remove('open');
-});
-
-sortDropdown.addEventListener('click', (e) => {
-  e.stopPropagation();
-});
-
-const toolbar = document.getElementById('toolbar');
-const searchInput = document.getElementById('search_input');
-
-searchInput.addEventListener('focus', () => {
-  toolbar.classList.add('search_focused');
-  sortDropdown.classList.add('hidden');
-  sortWidget.classList.remove('open');
-});
-
-searchInput.addEventListener('blur', () => {
-  setTimeout(() => {
-    toolbar.classList.remove('search_focused');
-  }, 150);
-});
 
 // Initial render
 refreshView();

@@ -229,6 +229,18 @@ html, body {
   white-space: nowrap;
 }
 
+.document {
+  border: none;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.document:focus-visible {
+  outline: 2px solid var(--dark);
+}
+
 .doc_text1 {
   margin-top: 7px;
   font-size: 1rem;

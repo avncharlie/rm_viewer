@@ -561,7 +561,7 @@ def build_search_index(
     with open(search_index_path, 'w') as f:
         json.dump(index, f, indent=2)
 
-    log.info(f"Search index: {len(backing_pages)} backing pages, {len(ocr_pages)} OCR pages")
+    log.info(f"Created search index: {len(backing_pages)} backing pages, {len(ocr_pages)} OCR pages")
 
 
 def parse_item(
